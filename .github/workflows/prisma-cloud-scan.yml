@@ -30,4 +30,4 @@ jobs:
           REPO_ID: ${{ github.repository }}
           BRANCH_NAME: ${{ github.ref_name }}
         run: |
-          checkov --prisma-api-url $PRISMA_API_URL --bc-api-key $PRISMA_API_KEY -d . --repo-id $REPO_ID --branch $BRANCH_NAME --compact --quiet --soft-fail
+          checkov -d . --bc-api-key $PRISMA_API_KEY --repo-id $REPO_ID --branch $BRANCH_NAME --compact --quiet --soft-fail
