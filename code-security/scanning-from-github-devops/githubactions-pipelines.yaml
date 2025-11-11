@@ -1,11 +1,10 @@
 name: Prisma Cloud Code Scan
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
+  push:        # Runs automatically on every commit
+    branches:  # You can add more branches if needed
+      - '**'   # Run on all branches
+  pull_request:  # Also run automatically on PRs
 
 jobs:
   checkov-scan:
