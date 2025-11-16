@@ -1,0 +1,160 @@
+name: Prisma Cloud CI/CD Pipeline (Code Scan + Container Scans)
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+env:
+  IMAGE_NAME: ${{ github.repository }}:${{ github.sha }}
+  ACR_IMAGE: ${{ secrets.AZURE_REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+
+jobs:
+
+  # ----------------------------------------------------------
+  # 1. CHECKOV CODE SCAN (new parallel job)
+  # ----------------------------------------------------------
+  checkov-scan:
+    name: Prisma Cloud Code Scan (Checkov)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Run Prisma Cloud Checkov Scan
+        env:
+          PRISMA_API_URL: ${{ secrets.PRISMA_API_URL }}
+          PRISMA_API_KEY: ${{ secrets.PRISMA_API_KEY }}
+          REPO_ID: ${{ github.repository }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          checkov \
+            --prisma-api-url "$PRISMA_API_URL" \
+            --bc-api-key "$PRISMA_API_KEY" \
+            -d . \
+            --repo-id "$REPO_ID" \
+            --branch "$BRANCH_NAME" \
+            --compact \
+            --quiet \
+            --soft-fail
+
+
+
+  # ----------------------------------------------------------
+  # 2. BUILD & PUSH IMAGE TO ACR
+  # ----------------------------------------------------------
+  build:
+    name: Build & Push Image to ACR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v3
+
+      - name: Create Dockerfile
+        run: |
+          cat <<EOF > Dockerfile
+          FROM nginx:1.21
+          EXPOSE 80
+          CMD ["nginx", "-g", "daemon off;"]
+          EOF
+
+      - name: Azure ACR login
+        run: |
+          echo "${{ secrets.AZURE_REGISTRY_PASSWORD }}" | \
+            docker login ${{ secrets.AZURE_REGISTRY }} \
+            --username "${{ secrets.AZURE_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Build image
+        run: docker build -t $ACR_IMAGE .
+
+      - name: Push image to ACR
+        run: docker push $ACR_IMAGE
+
+
+
+  # ----------------------------------------------------------
+  # 3. STATIC IMAGE VULNERABILITY SCAN (parallel)
+  # ----------------------------------------------------------
+  static-scan:
+    name: Static Image Scan
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Login to ACR
+        run: |
+          echo "${{ secrets.AZURE_REGISTRY_PASSWORD }}" | \
+            docker login ${{ secrets.AZURE_REGISTRY }} \
+            --username "${{ secrets.AZURE_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Pull image
+        run: docker pull $ACR_IMAGE
+
+      - name: Download twistcli
+        run: |
+          curl --insecure --user "${{ secrets.PCC_USER }}:${{ secrets.PCC_PASS }}" \
+            --output ./twistcli ${{ secrets.PCC_CONSOLE_URL }}/api/v1/util/twistcli
+          chmod +x ./twistcli
+
+      - name: Run static scan
+        run: |
+          ./twistcli images scan \
+            --address ${{ secrets.PCC_CONSOLE_URL }} \
+            --user ${{ secrets.PCC_USER }} \
+            --password ${{ secrets.PCC_PASS }} \
+            --details $ACR_IMAGE
+
+
+
+  # ----------------------------------------------------------
+  # 4. SANDBOX DYNAMIC ANALYSIS (parallel)
+  # ----------------------------------------------------------
+  sandbox:
+    name: Dynamic Sandbox Analysis
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Login to ACR
+        run: |
+          echo "${{ secrets.AZURE_REGISTRY_PASSWORD }}" | \
+            docker login ${{ secrets.AZURE_REGISTRY }} \
+            --username "${{ secrets.AZURE_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Pull image
+        run: docker pull $ACR_IMAGE
+
+      - name: Download twistcli
+        run: |
+          curl --insecure --user "${{ secrets.PCC_USER }}:${{ secrets.PCC_PASS }}" \
+            --output ./twistcli ${{ secrets.PCC_CONSOLE_URL }}/api/v1/util/twistcli
+          chmod +x ./twistcli
+
+      - name: Run sandbox analysis
+        run: |
+          sudo ./twistcli sandbox \
+            --address ${{ secrets.PCC_CONSOLE_URL }} \
+            --token ${{ secrets.PCC_API_TOKEN }} \
+            --user ${{ secrets.PCC_USER }} \
+            --password ${{ secrets.PCC_PASS }} \
+            --analysis-duration 10s \
+            --exit-on-error \
+            $ACR_IMAGE | tee sandbox_output
+
+          if grep -i 'Sandbox analysis verdict: FAIL' sandbox_output; then
+            echo "Dynamic analysis FAILED."
+            exit 1
+          else
+            echo "Dynamic analysis PASSED."
+          fi
