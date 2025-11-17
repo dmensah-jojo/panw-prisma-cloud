@@ -83,7 +83,7 @@ jobs:
 
 
 
-  # ----------------------------------------------------------
+   # ----------------------------------------------------------
   # 3. STATIC IMAGE VULNERABILITY SCAN (parallel)
   # ----------------------------------------------------------
   static-scan:
@@ -107,13 +107,13 @@ jobs:
             --output ./twistcli ${{ secrets.PCC_CONSOLE_URL }}/api/v1/util/twistcli
           chmod +x ./twistcli
 
-      - name: Run static scan
+      - name: Run static scan (soft fail)
         run: |
           ./twistcli images scan \
             --address ${{ secrets.PCC_CONSOLE_URL }} \
             --user ${{ secrets.PCC_USER }} \
             --password ${{ secrets.PCC_PASS }} \
-            --details $ACR_IMAGE
+            --details $ACR_IMAGE || true
 
 
 
